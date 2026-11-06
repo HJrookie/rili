@@ -23,7 +23,7 @@
               <a-popover
                 v-model:open="themePopoverOpen"
                 trigger="click"
-                placement="bottom"
+                :placement="popoverPlacement"
                 :overlay-class-name="'theme-popover-box ' + (currentTheme.isDark ? 'is-dark' : 'is-light')"
                 :arrow="false"
               >
@@ -87,8 +87,12 @@
             <div v-for="day in ['周一', '周二', '周三', '周四', '周五', '周六', '周日']" :key="day" class="week-label">{{ day }}</div>
           </div>
 
-          <!-- 使用 transition 包装网格，实现全场淡入淡出 -->
-          <div class="grid-container">
+          <!-- 使用 transition 包装网格，实现全场淡入淡出，并支持移动端左右轻扫手势切换月份 -->
+          <div
+            class="grid-container"
+            @touchstart="handleTouchStart"
+            @touchend="handleTouchEnd"
+          >
             <transition name="calendar-fade" mode="out-in">
               <!-- 关键点：用 key 绑定年份月份，key 变了就会触发动画 -->
               <div class="calendar-grid" :key="viewYear + '' + viewMonth">
@@ -129,7 +133,7 @@
             <div class="shichen-tips">{{ currentShiChen.tips }}</div>
           </div>
 
-          <a-divider style="border-color: rgba(255, 255, 255, 0.15); margin: 20px 0" />
+          <a-divider class="sidebar-divider" />
 
           <div class="side-info-body">
             <div class="side-date-header">
@@ -144,7 +148,7 @@
             </div>
 
             <div class="lunar-detail-text">
-              <div class="ganzhi-tag">{{ sideInfo.ganzhiYear }} {{ sideInfo.ganzhiMonth }} {{ sideInfo.ganzhiDay }}</div>
+              <div class="ganzhi-tag">{{ sideInfo.ganzhiYear }}年 {{ sideInfo.ganzhiMonth }}月 {{ sideInfo.ganzhiDay }}日 {{ sideInfo.ganzhiTime }}时</div>
               <div class="lunar-main-text">农历 {{ sideInfo.lunarMonth }} - {{ sideInfo.lunarDay }}</div>
             </div>
 
@@ -202,11 +206,18 @@ export default {
       yearOptions: Array.from({ length: 201 }, (_, i) => 1900 + i),
       currentTime: dayjs().format('HH:mm:ss'),
       timer: null,
-      storageHandler: null
+      storageHandler: null,
+      resizeHandler: null,
+      isMobile: false,
+      touchStartX: null,
+      touchStartY: null
     };
   },
   mounted() {
     this.startClock();
+    this.checkMobile();
+    this.resizeHandler = () => this.checkMobile();
+    window.addEventListener('resize', this.resizeHandler);
     // 监听其他标签页的主题同步
     this.storageHandler = (e) => {
       if (e.key === THEME_STORAGE_KEY && e.newValue && THEMES.some(t => t.id === e.newValue)) {
@@ -220,8 +231,14 @@ export default {
     if (this.storageHandler) {
       window.removeEventListener('storage', this.storageHandler);
     }
+    if (this.resizeHandler) {
+      window.removeEventListener('resize', this.resizeHandler);
+    }
   },
   computed: {
+    popoverPlacement() {
+      return this.isMobile ? 'bottomRight' : 'bottom';
+    },
     currentTheme() {
       return this.themes.find(t => t.id === this.currentThemeId) || this.themes[0];
     },
@@ -297,7 +314,17 @@ export default {
     // 侧边栏详情
     sideInfo() {
       const d = dayjs(this.selectedDateStr);
-      const solar = Solar.fromYmd(d.year(), d.month() + 1, d.date());
+      // 引用 this.currentTime 建立响应式依赖，当时辰更迭时自动同步更新
+      const _clock = this.currentTime;
+      const now = dayjs();
+      const solar = Solar.fromYmdHms(
+        d.year(),
+        d.month() + 1,
+        d.date(),
+        now.hour(),
+        now.minute(),
+        now.second()
+      );
       const lunar = solar.getLunar();
       return {
         year: d.year(),
@@ -307,6 +334,7 @@ export default {
         ganzhiYear: lunar.getYearInGanZhi(),
         ganzhiMonth: lunar.getMonthInGanZhi(),
         ganzhiDay: lunar.getDayInGanZhi(),
+        ganzhiTime: lunar.getTimeInGanZhi(),
         lunarMonth: lunar.getMonthInChinese(),
         lunarDay: lunar.getDayInChinese(),
         yi: lunar.getDayYi().slice(0, 5),
@@ -352,6 +380,31 @@ export default {
         content: `已切换至「${theme.name}」风格`,
         duration: 1.5
       });
+    },
+    checkMobile() {
+      this.isMobile = window.innerWidth <= 768;
+    },
+    handleTouchStart(e) {
+      if (e.touches && e.touches.length === 1) {
+        this.touchStartX = e.touches[0].clientX;
+        this.touchStartY = e.touches[0].clientY;
+      }
+    },
+    handleTouchEnd(e) {
+      if (this.touchStartX === null || !e.changedTouches || e.changedTouches.length === 0) return;
+      const deltaX = e.changedTouches[0].clientX - this.touchStartX;
+      const deltaY = e.changedTouches[0].clientY - this.touchStartY;
+      this.touchStartX = null;
+      this.touchStartY = null;
+
+      // 判定水平手势滑动：X 轴位移大于 40px 且明显大于 Y 轴位移（避免干扰正常上下滚动）
+      if (Math.abs(deltaX) > 40 && Math.abs(deltaX) > Math.abs(deltaY) * 1.4) {
+        if (deltaX < 0) {
+          this.changeMonth(1); // 左滑 -> 下一月
+        } else {
+          this.changeMonth(-1); // 右滑 -> 上一月
+        }
+      }
     }
   }
 };
@@ -364,22 +417,48 @@ export default {
   display: flex;
   justify-content: center;
   align-items: center;
-  padding: 20px;
+  padding: 24px 20px;
   font-family: 'Inter', 'PingFang SC', sans-serif;
   transition: background 0.6s cubic-bezier(0.4, 0, 0.2, 1);
+  box-sizing: border-box;
+
+  @media (max-width: 1024px) {
+    padding: 16px 12px;
+    align-items: flex-start;
+  }
+
+  @media (max-width: 640px) {
+    padding: 12px 8px calc(24px + env(safe-area-inset-bottom, 0px));
+  }
 }
 
 .calendar-glass-container {
   width: 1100px;
+  max-width: 100%;
   height: 750px;
   background: var(--container-bg);
   backdrop-filter: blur(25px);
+  -webkit-backdrop-filter: blur(25px);
   border-radius: 40px;
   display: flex;
   box-shadow: var(--container-shadow);
   overflow: hidden;
   border: 1px solid var(--container-border);
   transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
+
+  @media (max-width: 1024px) {
+    width: 100%;
+    max-width: 580px;
+    height: auto;
+    min-height: auto;
+    flex-direction: column;
+    border-radius: 28px;
+    margin: 0 auto;
+  }
+
+  @media (max-width: 480px) {
+    border-radius: 24px;
+  }
 }
 
 /* 左侧网格 */
@@ -389,6 +468,18 @@ export default {
   display: flex;
   flex-direction: column;
 
+  @media (max-width: 1024px) {
+    padding: 24px 20px;
+  }
+
+  @media (max-width: 640px) {
+    padding: 16px 12px 14px;
+  }
+
+  @media (max-width: 380px) {
+    padding: 14px 8px 12px;
+  }
+
   .calendar-header {
     display: flex;
     justify-content: space-between;
@@ -396,9 +487,54 @@ export default {
     margin-bottom: 30px;
     gap: 16px;
 
+    @media (max-width: 768px) {
+      display: grid;
+      grid-template-columns: 1fr auto;
+      grid-template-rows: auto auto;
+      gap: 12px 8px;
+      margin-bottom: 16px;
+      align-items: center;
+
+      .date-jump {
+        grid-column: 1 / 2;
+        grid-row: 1 / 2;
+      }
+
+      .theme-switcher-wrapper {
+        grid-column: 2 / 3;
+        grid-row: 1 / 2;
+        justify-self: end;
+      }
+
+      .nav-controls {
+        grid-column: 1 / 3;
+        grid-row: 2 / 3;
+        display: flex;
+        justify-content: center;
+        gap: 24px;
+        padding-top: 4px;
+      }
+    }
+
     .date-jump {
       display: flex;
       gap: 10px;
+
+      @media (max-width: 640px) {
+        gap: 6px;
+      }
+    }
+
+    .glass-select {
+      min-width: 86px;
+
+      @media (max-width: 640px) {
+        min-width: 76px;
+      }
+
+      @media (max-width: 380px) {
+        min-width: 68px;
+      }
     }
 
     .glass-select :deep(.ant-select-selector) {
@@ -408,11 +544,21 @@ export default {
       color: var(--color-text-main) !important;
       box-shadow: 0 2px 8px rgba(0, 0, 0, 0.04);
       transition: all 0.3s ease;
+
+      @media (max-width: 640px) {
+        padding: 0 8px !important;
+        height: 34px !important;
+      }
     }
 
     .glass-select :deep(.ant-select-selection-item) {
       color: var(--color-text-main) !important;
       font-weight: 500;
+
+      @media (max-width: 640px) {
+        font-size: 13px !important;
+        line-height: 32px !important;
+      }
     }
 
     .glass-select :deep(.ant-select-arrow) {
@@ -433,6 +579,7 @@ export default {
       padding: 0 16px;
       background: var(--select-bg);
       backdrop-filter: blur(10px);
+      -webkit-backdrop-filter: blur(10px);
       border: 1px solid rgba(255, 255, 255, 0.35);
       border-radius: 20px;
       cursor: pointer;
@@ -442,6 +589,20 @@ export default {
       transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
       box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
 
+      @media (max-width: 640px) {
+        height: 34px;
+        padding: 0 10px;
+        font-size: 12px;
+        gap: 6px;
+
+        .theme-btn-name {
+          max-width: 68px;
+          overflow: hidden;
+          text-overflow: ellipsis;
+          white-space: nowrap;
+        }
+      }
+
       &:hover {
         background: var(--day-node-hover);
         transform: translateY(-1px);
@@ -450,11 +611,19 @@ export default {
         color: var(--color-primary);
       }
 
+      &:active {
+        transform: scale(0.96);
+      }
+
       .theme-palette-icon {
         font-size: 16px;
         display: flex;
         align-items: center;
         color: var(--color-primary);
+
+        @media (max-width: 640px) {
+          font-size: 14px;
+        }
       }
 
       .theme-btn-name {
@@ -488,10 +657,19 @@ export default {
       border: 1px solid rgba(255, 255, 255, 0.2);
       transition: all 0.3s ease;
 
+      @media (max-width: 640px) {
+        width: 34px;
+        height: 34px;
+      }
+
       &:hover {
         background: var(--nav-btn-hover);
         color: var(--color-primary);
         transform: scale(1.05);
+      }
+
+      &:active {
+        transform: scale(0.92);
       }
     }
 
@@ -502,9 +680,19 @@ export default {
       box-shadow: 0 4px 12px rgba(0, 0, 0, 0.12);
       transition: all 0.3s ease;
 
+      @media (max-width: 640px) {
+        height: 32px;
+        padding: 0 16px;
+        font-size: 13px;
+      }
+
       &:hover {
         background: var(--color-primary-deep);
         transform: scale(1.02);
+      }
+
+      &:active {
+        transform: scale(0.96);
       }
     }
   }
@@ -513,6 +701,7 @@ export default {
     flex: 1;
     position: relative;
     overflow: hidden;
+    touch-action: pan-y;
   }
 
   .calendar-grid {
@@ -521,6 +710,19 @@ export default {
     grid-template-rows: repeat(6, 1fr);
     gap: 12px;
     height: 100%;
+
+    @media (max-width: 1024px) {
+      gap: 8px;
+      height: auto;
+    }
+
+    @media (max-width: 640px) {
+      gap: 5px;
+    }
+
+    @media (max-width: 380px) {
+      gap: 3px;
+    }
   }
 
   .day-node {
@@ -534,11 +736,35 @@ export default {
     justify-content: center;
     transition: all 0.3s cubic-bezier(0.4, 0, 0.2, 1);
     border: 1.5px solid transparent;
+    user-select: none;
+    -webkit-tap-highlight-color: transparent;
+
+    @media (max-width: 1024px) {
+      border-radius: 14px;
+      padding: 8px 4px;
+      min-height: 52px;
+    }
+
+    @media (max-width: 640px) {
+      border-radius: 12px;
+      padding: 6px 2px;
+      min-height: 48px;
+    }
+
+    @media (max-width: 380px) {
+      border-radius: 10px;
+      padding: 4px 1px;
+      min-height: 44px;
+    }
 
     &:hover {
       background: var(--day-node-hover);
       transform: translateY(-3px);
       box-shadow: 0 6px 16px rgba(0, 0, 0, 0.06);
+    }
+
+    &:active {
+      transform: scale(0.96);
     }
 
     &.is-selected {
@@ -571,6 +797,19 @@ export default {
       font-weight: 700;
       color: var(--color-text-main);
       transition: color 0.3s ease;
+      line-height: 1.15;
+
+      @media (max-width: 1024px) {
+        font-size: 18px;
+      }
+
+      @media (max-width: 640px) {
+        font-size: 16px;
+      }
+
+      @media (max-width: 380px) {
+        font-size: 14px;
+      }
     }
 
     .lunar-txt {
@@ -578,6 +817,27 @@ export default {
       color: var(--color-text-sub);
       margin-top: 4px;
       transition: color 0.3s ease;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      max-width: 100%;
+      line-height: 1.2;
+
+      @media (max-width: 1024px) {
+        font-size: 11px;
+        margin-top: 2px;
+      }
+
+      @media (max-width: 640px) {
+        font-size: 10px;
+        transform: scale(0.92);
+        transform-origin: center top;
+      }
+
+      @media (max-width: 380px) {
+        font-size: 9px;
+        transform: scale(0.85);
+      }
     }
 
     .is-term {
@@ -592,6 +852,12 @@ export default {
       background-color: var(--color-primary);
       margin-top: 4px;
       transition: background-color 0.3s ease;
+
+      @media (max-width: 640px) {
+        width: 4px;
+        height: 4px;
+        margin-top: 2px;
+      }
     }
   }
 }
@@ -606,6 +872,16 @@ export default {
   flex-direction: column;
   transition: all 0.5s cubic-bezier(0.4, 0, 0.2, 1);
 
+  @media (max-width: 1024px) {
+    width: 100%;
+    padding: 24px 20px 28px;
+    border-top: 1px solid rgba(255, 255, 255, 0.12);
+  }
+
+  @media (max-width: 640px) {
+    padding: 20px 16px 24px;
+  }
+
   .realtime-clock {
     text-align: center;
 
@@ -613,6 +889,11 @@ export default {
       font-size: 32px;
       font-weight: 200;
       letter-spacing: 2px;
+
+      @media (max-width: 640px) {
+        font-size: 26px;
+        letter-spacing: 1px;
+      }
     }
 
     .shichen-badge {
@@ -623,6 +904,13 @@ export default {
       background: rgba(255, 255, 255, 0.1);
       padding: 5px 15px;
       border-radius: 20px;
+
+      @media (max-width: 640px) {
+        gap: 6px;
+        margin: 6px 0;
+        padding: 4px 12px;
+        font-size: 12px;
+      }
 
       .shichen-name {
         font-weight: 600;
@@ -640,6 +928,19 @@ export default {
       font-size: 12px;
       opacity: 0.5;
       font-style: italic;
+
+      @media (max-width: 640px) {
+        font-size: 11px;
+      }
+    }
+  }
+
+  .sidebar-divider {
+    border-color: rgba(255, 255, 255, 0.15) !important;
+    margin: 20px 0 !important;
+
+    @media (max-width: 640px) {
+      margin: 14px 0 !important;
     }
   }
 
@@ -649,12 +950,21 @@ export default {
     .side-year {
       font-size: 14px;
       opacity: 0.6;
+
+      @media (max-width: 640px) {
+        font-size: 13px;
+      }
     }
 
     .side-month-day {
       font-size: 26px;
       font-weight: 600;
       margin-top: 5px;
+
+      @media (max-width: 640px) {
+        font-size: 22px;
+        margin-top: 2px;
+      }
     }
   }
 
@@ -664,10 +974,18 @@ export default {
     align-items: center;
     justify-content: center;
 
+    @media (max-width: 640px) {
+      height: 85px;
+    }
+
     .big-day {
       font-size: 110px;
       font-weight: 800;
       text-shadow: 0 10px 30px rgba(0, 0, 0, 0.3);
+
+      @media (max-width: 640px) {
+        font-size: 68px;
+      }
     }
   }
 
@@ -679,11 +997,20 @@ export default {
       color: var(--sidebar-accent);
       margin-bottom: 5px;
       transition: color 0.4s ease;
+
+      @media (max-width: 640px) {
+        font-size: 11px;
+      }
     }
 
     .lunar-main-text {
       font-size: 18px;
       letter-spacing: 2px;
+
+      @media (max-width: 640px) {
+        font-size: 15px;
+        letter-spacing: 1px;
+      }
     }
   }
 
@@ -693,10 +1020,19 @@ export default {
     flex-direction: column;
     gap: 15px;
 
+    @media (max-width: 640px) {
+      margin-top: 16px;
+      gap: 10px;
+    }
+
     .yiji-item {
       display: flex;
       align-items: flex-start;
       gap: 12px;
+
+      @media (max-width: 640px) {
+        gap: 10px;
+      }
 
       .circle {
         width: 32px;
@@ -709,6 +1045,12 @@ export default {
         font-size: 14px;
         flex-shrink: 0;
         transition: background-color 0.4s ease;
+
+        @media (max-width: 640px) {
+          width: 26px;
+          height: 26px;
+          font-size: 12px;
+        }
       }
 
       .text {
@@ -716,6 +1058,12 @@ export default {
         line-height: 1.6;
         opacity: 0.8;
         padding-top: 4px;
+
+        @media (max-width: 640px) {
+          font-size: 12px;
+          line-height: 1.5;
+          padding-top: 2px;
+        }
       }
 
       &.yi .circle {
@@ -762,12 +1110,20 @@ export default {
   grid-template-columns: repeat(7, 1fr);
   margin-bottom: 15px;
 
+  @media (max-width: 640px) {
+    margin-bottom: 8px;
+  }
+
   .week-label {
     text-align: center;
     font-size: 13px;
     color: var(--color-text-sub);
     font-weight: 600;
     transition: color 0.3s ease;
+
+    @media (max-width: 640px) {
+      font-size: 11px;
+    }
   }
 }
 </style>
@@ -986,6 +1342,73 @@ export default {
     border-top-color: rgba(255, 255, 255, 0.1);
     .footer-tip {
       color: #8b949e;
+    }
+  }
+}
+
+@media (max-width: 640px) {
+  .theme-popover-box {
+    max-width: calc(100vw - 20px) !important;
+
+    .ant-popover-inner {
+      border-radius: 20px !important;
+    }
+  }
+
+  .theme-panel {
+    width: calc(100vw - 32px) !important;
+    max-width: 360px !important;
+    padding: 16px 14px !important;
+
+    .theme-panel-header {
+      margin-bottom: 12px !important;
+
+      .panel-title {
+        font-size: 15px !important;
+      }
+      .theme-count-tag {
+        font-size: 11px !important;
+        padding: 2px 8px !important;
+      }
+      .panel-subtitle {
+        font-size: 11px !important;
+      }
+    }
+
+    .theme-grid {
+      grid-template-columns: repeat(2, 1fr) !important;
+      gap: 8px !important;
+      max-height: 52vh !important;
+      overflow-y: auto !important;
+      -webkit-overflow-scrolling: touch;
+      padding-right: 2px;
+    }
+
+    .theme-card {
+      padding: 8px !important;
+      border-radius: 12px !important;
+
+      .theme-preview {
+        height: 36px !important;
+      }
+
+      .theme-card-info {
+        .theme-name {
+          font-size: 12px !important;
+        }
+        .theme-desc {
+          font-size: 10px !important;
+        }
+      }
+    }
+
+    .theme-panel-footer {
+      margin-top: 12px !important;
+      padding-top: 8px !important;
+
+      .footer-tip {
+        font-size: 11px !important;
+      }
     }
   }
 }
